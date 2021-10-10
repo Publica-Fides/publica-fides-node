@@ -185,8 +185,7 @@ version = '4.0.0-dev'
 
 [dependencies.pallet-collective]
 default-features = false
-git = 'https://github.com/justinFrevert/substrate.git'
-tag = 'populace-v0.1'
+path = '../pallets/pallet-collective'
 version = '4.0.0-dev'
 
 [features]
