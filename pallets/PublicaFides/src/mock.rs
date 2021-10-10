@@ -1,5 +1,5 @@
 use super::*;
-use crate as ;
+use crate as publica_fides;
 use frame_support::parameter_types;
 use frame_system as system;
 use sp_core::H256;
@@ -19,7 +19,7 @@ frame_support::construct_runtime!(
 		UncheckedExtrinsic = UncheckedExtrinsic,
 	{
 		System: frame_system::{Pallet, Call, Config, Storage, Event<T>},
-		PublicaFides: ::{Pallet, Call, Storage, Event<T>},
+		PublicaFides: publica_fides::{Pallet, Call, Storage, Event<T>},
 	}
 );
 
@@ -54,9 +54,9 @@ impl system::Config for Test {
 	type OnSetCode = ();
 }
 
-impl ::Config for Test {
+impl publica_fides::Config for Test {
 	type Event = Event;
-	type ArticleId = u32;
+	type ContentId = u32;
 }
 
 // Build genesis storage according to the mock runtime.

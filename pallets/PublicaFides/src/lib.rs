@@ -11,6 +11,8 @@ mod tests;
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarking;
 
+mod helper;
+
 #[frame_support::pallet]
 pub mod pallet {
 	use frame_support::{
@@ -20,14 +22,14 @@ pub mod pallet {
 	use frame_system::pallet_prelude::*;
 	use sp_std::vec::Vec;
 	use sp_runtime::traits::{AtLeast32BitUnsigned, CheckedAdd, One};
-	
-	
+	use substrate_fixed::types::U32F32;
+	pub use crate::helper::score_claims;
 	
 	#[pallet::config]
 	pub trait Config: frame_system::Config {
 		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
 		/// Id of content stored in the system
-		type  ContentId: Parameter + Member + AtLeast32BitUnsigned + Default + Copy;
+		type ContentId: Parameter + Member + AtLeast32BitUnsigned + Default + Copy;
 	}
 	
 	/// Id of claims made in the system.
@@ -38,14 +40,15 @@ pub mod pallet {
 	pub struct Pallet<T>(_);
 	
 	
-
 	#[derive(Encode, Decode, Default, Clone, Eq, PartialEq, RuntimeDebug)]
 	/// Represents content in the system.
 	pub struct Content {
 		/// The URL designated for accessing the Content
 		url: Vec<u8>,
-		/// u32s representing ids of any Claims raised in the Content
-		claims: Vec<u32>,
+		/// Claims raised in the Content and their vote result. Max 10
+		claims: Vec<Claim>,
+		/// Number in range of 0-1 representing the calculated score for each piece of content
+		score: U32F32
 	}
 
 	#[pallet::storage]
@@ -62,8 +65,17 @@ pub mod pallet {
 	#[pallet::getter(fn next_claim_id)]
 	pub type NextClaimId<T: Config> = StorageValue<_, ClaimId, ValueQuery>;
 
+	#[pallet::storage]
+	#[pallet::getter(fn next_resolved_claim_id)]
+	pub type NextResolvedClaimID<T: Config> = StorageValue<_, ClaimId, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn get_final_claims)]
+	pub type FinalClaimStorage<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::ContentId, ResolvedClaims, ValueQuery>;
+
 	#[derive(Encode, Decode, Default, Clone, Eq, PartialEq, RuntimeDebug)]
-	/// Claims made in scientific articles. Proposers can introduce claims as accepted or rejected to reflect the veracity of the content.
+	/// Claims made in proposed content. Proposers can introduce claims as accepted or rejected to reflect the veracity of the content.
 	pub struct Claim {
 		/// the IPFS CID of the text that contains the objective claim statement.
 		pub claim_text_cid: Vec<u8>,
@@ -71,9 +83,15 @@ pub mod pallet {
 		pub is_accepted: bool,
 	}
 
+	#[derive(Encode, Decode, Default, Clone, Eq, PartialEq, RuntimeDebug)]
+	// Claims that have been verified as objective and judged to be true or false
+	pub struct ResolvedClaims {
+		pub claims: Vec<Claim>
+	}
+
 	#[pallet::storage]
 	#[pallet::getter(fn get_claims)]
-	/// Double Storage map that maps claims to the articles they originated from
+	// Double Storage map that maps claims to the articles they originated from
 	pub type ClaimsToContent<T: Config> = StorageDoubleMap<
 		_,
 		Blake2_128Concat,
@@ -90,6 +108,7 @@ pub mod pallet {
 	pub enum Event<T: Config> {
 		ContentStored(T::ContentId),
 		ClaimStored(ClaimId),
+		ScoreStored(u8),
 	}
 
 	#[pallet::error]
@@ -98,6 +117,20 @@ pub mod pallet {
 		NoAvailableClaimId,
 		NonExistentContent
 	}
+
+pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
+	// Get mutable stored content by its id
+	ContentStorage::<T>::try_mutate_exists(content_id, |query_result| -> DispatchResult {
+		let content = query_result.as_mut().ok_or(Error::<T>::NonExistentContent).unwrap();
+		// get claims for the given piece of content
+		let claims = FinalClaimStorage::<T>::get(content_id);
+		// update score of that piece of content with the score
+		content.score = score_claims(claims);
+		// Todo: decide whether we want to send an event i.e. alert the sender about the result
+		// Pallet::<T>::deposit_event(Event::ScoreStored(yourscorehere));
+		Ok(())
+	});
+}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -120,7 +153,7 @@ pub mod pallet {
 					Ok(current_id)
 				})?;
 
-			let content = Content { url, claims : [].to_vec() };
+			let content = Content { url, claims: [].to_vec(), score: U32F32::from_num(0) };
 			ContentStorage::<T>::insert(class_id.clone(), content);
 			Self::deposit_event(Event::ContentStored(class_id));
 			// Return a successful DispatchResultWithPostInfo
@@ -154,17 +187,27 @@ pub mod pallet {
 						claim_id.checked_add(One::one()).ok_or(Error::<T>::NoAvailableClaimId)?;
 					Ok(current_id)
 				})?;
+			
+			let new_resolved_claim_id =
+				NextResolvedClaimID::<T>::try_mutate(|claim_id| -> Result<ClaimId, DispatchError> {
+					let current_id = *claim_id;
+					*claim_id =
+						claim_id.checked_add(One::one()).ok_or(Error::<T>::NoAvailableClaimId)?;
+					Ok(current_id)
+				})?;
+
+			let this_claim = Claim { claim_text_cid: claim_statement, is_accepted };
 
 			ClaimsToContent::<T>::insert(
 				new_claim_id,
 				content_id.clone(),
-                Claim { claim_text_cid: claim_statement, is_accepted },
+                this_claim.clone(),
 			);
 
 			ContentStorage::<T>::try_mutate_exists(content_id.clone(), |val| -> DispatchResult {
 				// add claim id to content for future reference
 				let content = val.as_mut().ok_or(Error::<T>::NonExistentContent).unwrap();
-				content.claims.push(new_claim_id);
+				content.claims.push(this_claim);
 				Self::deposit_event(Event::ClaimStored(new_claim_id));
 				Ok(())
 			});
