@@ -66,6 +66,11 @@ pub mod pallet {
 	pub type NextClaimId<T: Config> = StorageValue<_, ClaimId, ValueQuery>;
 
 	#[pallet::storage]
+	#[pallet::getter(fn get_objectivity)]
+	pub type ObjectivityStorage<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::ClaimId, Claim, ValueQuery>;
+
+	#[pallet::storage]
 	#[pallet::getter(fn next_resolved_claim_id)]
 	pub type NextResolvedClaimID<T: Config> = StorageValue<_, ClaimId, ValueQuery>;
 
@@ -108,7 +113,8 @@ pub mod pallet {
 	pub enum Event<T: Config> {
 		ContentStored(T::ContentId),
 		ClaimStored(ClaimId),
-		ScoreStored(u8),
+		ScoreStored(),
+		ObjectivityStored(ClaimId),
 	}
 
 	#[pallet::error]
@@ -123,7 +129,7 @@ pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
 	ContentStorage::<T>::try_mutate_exists(content_id, |query_result| -> DispatchResult {
 		let content = query_result.as_mut().ok_or(Error::<T>::NonExistentContent).unwrap();
 		// get claims for the given piece of content
-		let claims = FinalClaimStorage::<T>::get(content_id);
+		let claims = FinalClaimStorage::<T>::get_final_claims(content_id);
 		// update score of that piece of content with the score
 		content.score = score_claims(claims);
 		// Todo: decide whether we want to send an event i.e. alert the sender about the result
@@ -215,5 +221,41 @@ pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
 			Self::deposit_event(Event::ClaimStored(new_claim_id));
 			Ok(())
 		}
+
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
+		/// Stores a claim as objective.
+		///
+		/// # Arguments
+		///
+		/// * `origin` - Origin of the request
+		/// * `Claim` - 
+		/// * `ClaimId` - Id of the claim
+		/// * `is_objective` - Whether a claim was determined objective or subjective
+		pub fn store_objectivity_for_claim(
+			origin: OriginFor<T>,
+			claim_statement: Vec<u8>,
+			claim_id: T::ClaimId,
+			is_objective: bool,
+		) -> DispatchResult {
+			// TODO: Discuss how this interacts with the propose extrinsic of pallet collective
+			ensure_signed(origin)?;
+			// Ensure that the claim is_objective
+			ensure!(is_objective == true);
+
+			let new_claim_id =
+				NextClaimId::<T>::try_mutate(|claim_id| -> Result<ClaimId, DispatchError> {
+					let current_id = *claim_id;
+					*claim_id =
+						claim_id.checked_add(One::one()).ok_or(Error::<T>::NoAvailableClaimId)?;
+					Ok(current_id)
+				})?;
+
+			let objective_claim = Claim { claim_text_cid: claim_statement, is_accepted };
+
+			ClaimsToContent::<T>::insert(
+				new_claim_id,
+				claim_id.clone(),
+                objective_claim.clone(),
+			);
 	}
 }
