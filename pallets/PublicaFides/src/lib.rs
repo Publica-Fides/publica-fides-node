@@ -65,6 +65,11 @@ pub mod pallet {
 	pub type NextClaimId<T: Config> = StorageValue<_, ClaimId, ValueQuery>;
 
 	#[pallet::storage]
+	#[pallet::getter(fn get_objectivity)]
+	pub type ObjectiveClaimStorage<T: Config> =
+		StorageMap<_, Blake2_128Concat, ClaimId, Claim, ValueQuery>;
+
+	#[pallet::storage]
 	#[pallet::getter(fn next_resolved_claim_id)]
 	pub type NextResolvedClaimID<T: Config> = StorageValue<_, ClaimId, ValueQuery>;
 
@@ -111,6 +116,7 @@ pub mod pallet {
 		ClaimText(Vec<u8>),
 		NewParticipant(T::AccountId),
 		RemovedParticipant(T::AccountId),
+		ObjectivityStored(ClaimId)
 	}
 
 	#[pallet::error]
@@ -235,6 +241,35 @@ pub mod pallet {
 			let who = ensure_signed(origin)?;
 			// Remove member from collective instance/membership/storage. Whichever we decide
 			Self::deposit_event(Event::RemovedParticipant(who));
+			Ok(())
+		}
+		/// Stores a claim as objective.
+		/// * 'origin' - Origin of the request
+		/// * `claim_statement` - IPFS CID of a stored string that contains an objective claim.
+		/// * `claim_id` - previously generated 
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
+		pub fn store_objectivity_for_claim(
+			origin: OriginFor<T>,
+			claim_statement: Vec<u8>,
+			is_accepted: bool,
+		) -> DispatchResult {
+			// TODO: Discuss how this interacts with the propose extrinsic of pallet collective
+			ensure_signed(origin)?;
+
+			let new_claim_id =
+				NextClaimId::<T>::try_mutate(|claim_id| -> Result<ClaimId, DispatchError> {
+					let current_id = *claim_id;
+					*claim_id =
+						claim_id.checked_add(One::one()).ok_or(Error::<T>::NoAvailableClaimId)?;
+					Ok(current_id)
+				})?;
+
+			let objective_claim = Claim { claim_text_cid: claim_statement, is_accepted };
+
+			ObjectiveClaimStorage::<T>::insert(
+				new_claim_id,
+                objective_claim,
+			);
 			Ok(())
 		}
 	}
