@@ -197,9 +197,16 @@ decl_storage! {
 	trait Store for Module<T: Config<I>, I: Instance=DefaultInstance> as Collective {
 		/// The hashes of the active proposals.
 		pub Proposals get(fn proposals): BoundedVec<T::Hash, T::MaxProposals>;
+
+		pub FallbackProposals get(fn fallback_proposals): BoundedVec<T::Hash, T::MaxProposals>;
 		/// Actual proposal for a given hash, if it's current.
 		pub ProposalOf get(fn proposal_of):
 			map hasher(identity) T::Hash => Option<<T as Config<I>>::Proposal>;
+
+		/// Fallback proposal for a given hash, if it's current.
+		pub FallbackProposalOf get(fn fallback_proposal_of):
+			map hasher(identity) T::Hash => Option<<T as Config<I>>::Proposal>;
+
 		/// Votes on a given proposal, if it is ongoing.
 		pub Voting get(fn voting):
 			map hasher(identity) T::Hash => Option<Votes<T::AccountId, T::BlockNumber>>;
@@ -230,8 +237,8 @@ decl_event! {
 	{
 		/// A motion (given hash) has been proposed (by given account) with a threshold (given
 		/// `MemberCount`).
-		/// \[account, proposal_index, proposal_hash, threshold\]
-		Proposed(AccountId, ProposalIndex, Hash, MemberCount),
+		/// \[account, proposal_index, proposal_hash, threshold, fallback_proposal_hash\]
+		Proposed(AccountId, ProposalIndex, Hash, MemberCount, Hash),
 		/// A motion (given hash) has been voted on by given account, leaving
 		/// a tally (yes votes and no votes given respectively as `MemberCount`).
 		/// \[account, proposal_hash, voted, yes, no\]
@@ -450,7 +457,8 @@ decl_module! {
 		fn propose(origin,
 			#[compact] threshold: MemberCount,
 			proposal: Box<<T as Config<I>>::Proposal>,
-			#[compact] length_bound: u32
+			#[compact] length_bound: u32,
+			fallback_proposal: Box<<T as Config<I>>::Proposal>,
 		) -> DispatchResultWithPostInfo {
 			let who = ensure_signed(origin)?;
 			let members = Self::members();
@@ -460,6 +468,11 @@ decl_module! {
 			ensure!(proposal_len <= length_bound as usize, Error::<T, I>::WrongProposalLength);
 			let proposal_hash = T::Hashing::hash_of(&proposal);
 			ensure!(!<ProposalOf<T, I>>::contains_key(proposal_hash), Error::<T, I>::DuplicateProposal);
+
+			let fallback_proposal_len = fallback_proposal.using_encoded(|x| x.len());
+			ensure!(fallback_proposal_len <= length_bound as usize, Error::<T, I>::WrongProposalLength);
+			let fallback_proposal_hash = T::Hashing::hash_of(&fallback_proposal);
+			ensure!(!<FallbackProposalOf<T, I>>::contains_key(fallback_proposal_hash), Error::<T, I>::DuplicateProposal);
 
 			if threshold < 2 {
 				let seats = Self::members().len() as MemberCount;
@@ -480,16 +493,26 @@ decl_module! {
 						proposals.try_push(proposal_hash).map_err(|_| Error::<T, I>::TooManyProposals)?;
 						Ok(proposals.len())
 					})?;
+
+				let active_fallback_proposals =
+				<FallbackProposals<T, I>>::try_mutate(|fallback_proposals| -> Result<usize, DispatchError> {
+					fallback_proposals.try_push(fallback_proposal_hash).map_err(|_| Error::<T, I>::TooManyProposals)?;
+					Ok(fallback_proposals.len())
+				})?;
+
 				let index = Self::proposal_count();
 				<ProposalCount<I>>::mutate(|i| *i += 1);
+
 				<ProposalOf<T, I>>::insert(proposal_hash, *proposal);
+				<FallbackProposalOf<T, I>>::insert(fallback_proposal_hash, *fallback_proposal);
+
 				let votes = {
 					let end = system::Pallet::<T>::block_number() + T::MotionDuration::get();
 					Votes { index, threshold, ayes: vec![], nays: vec![], end }
 				};
 				<Voting<T, I>>::insert(proposal_hash, votes);
 
-				Self::deposit_event(RawEvent::Proposed(who, index, proposal_hash, threshold));
+				Self::deposit_event(RawEvent::Proposed(who, index, proposal_hash, threshold, fallback_proposal_hash));
 
 				Ok(Some(T::WeightInfo::propose_proposed(
 					proposal_len as u32, // B
@@ -622,7 +645,8 @@ decl_module! {
 			proposal_hash: T::Hash,
 			#[compact] index: ProposalIndex,
 			#[compact] proposal_weight_bound: Weight,
-			#[compact] length_bound: u32
+			#[compact] length_bound: u32,
+			fallback_proposal_hash: T::Hash,
 		) -> DispatchResultWithPostInfo {
 			let _ = ensure_signed(origin)?;
 
@@ -651,8 +675,18 @@ decl_module! {
 				).into());
 
 			} else if disapproved {
-				Self::deposit_event(RawEvent::Closed(proposal_hash, yes_votes, no_votes));
-				let proposal_count = Self::do_disapprove_proposal(proposal_hash);
+				let (proposal, len) = Self::validate_and_get_proposal(
+					&fallback_proposal_hash,
+					length_bound,
+					proposal_weight_bound,
+				)?;
+				Self::deposit_event(RawEvent::Closed(fallback_proposal_hash, yes_votes, no_votes));
+				let proposal_count = Self::do_disapprove_proposal(
+					fallback_proposal_hash,
+					seats,
+					voting,
+					proposal
+				);
 				return Ok((
 					Some(T::WeightInfo::close_early_disapproved(seats, proposal_count)),
 					Pays::No,
@@ -689,33 +723,23 @@ decl_module! {
 					Pays::Yes,
 				).into());
 			} else {
-				Self::deposit_event(RawEvent::Closed(proposal_hash, yes_votes, no_votes));
-				let proposal_count = Self::do_disapprove_proposal(proposal_hash);
+				let (proposal, len) = Self::validate_and_get_proposal(
+					&fallback_proposal_hash,
+					length_bound,
+					proposal_weight_bound,
+				)?;
+				Self::deposit_event(RawEvent::Closed(fallback_proposal_hash, yes_votes, no_votes));
+				let proposal_count = Self::do_disapprove_proposal(
+					fallback_proposal_hash,
+					seats,
+					voting,
+					proposal
+				);
 				return Ok((
 					Some(T::WeightInfo::close_disapproved(seats, proposal_count)),
 					Pays::No,
 				).into());
 			}
-		}
-
-		/// Disapprove a proposal, close, and remove it from the system, regardless of its current state.
-		///
-		/// Must be called by the Root origin.
-		///
-		/// Parameters:
-		/// * `proposal_hash`: The hash of the proposal that should be disapproved.
-		///
-		/// # <weight>
-		/// Complexity: O(P) where P is the number of max proposals
-		/// DB Weight:
-		/// * Reads: Proposals
-		/// * Writes: Voting, Proposals, ProposalOf
-		/// # </weight>
-		#[weight = T::WeightInfo::disapprove_proposal(T::MaxProposals::get())]
-		fn disapprove_proposal(origin, proposal_hash: T::Hash) -> DispatchResultWithPostInfo {
-			ensure_root(origin)?;
-			let proposal_count = Self::do_disapprove_proposal(proposal_hash);
-			Ok(Some(T::WeightInfo::disapprove_proposal(proposal_count)).into())
 		}
 	}
 }
@@ -784,7 +808,12 @@ impl<T: Config<I>, I: Instance> Module<T, I> {
 		(proposal_weight, proposal_count)
 	}
 
-	fn do_disapprove_proposal(proposal_hash: T::Hash) -> u32 {
+	fn do_disapprove_proposal(
+		proposal_hash: T::Hash,
+		seats: MemberCount,
+		voting: Votes<T::AccountId, T::BlockNumber>,
+		proposal: <T as Config<I>>::Proposal,
+	) -> u32 {
 		// disapproved
 		Self::deposit_event(RawEvent::Disapproved(proposal_hash));
 		Self::remove_proposal(proposal_hash)
@@ -2125,36 +2154,35 @@ mod tests {
 	}
 
 	#[test]
-	fn disapprove_proposal_works() {
-		new_test_ext().execute_with(|| {
-			let proposal = make_proposal(42);
-			let proposal_len: u32 = proposal.using_encoded(|p| p.len() as u32);
-			let hash: H256 = proposal.blake2_256().into();
-			assert_ok!(Collective::propose(
-				Origin::signed(1),
-				2,
-				Box::new(proposal.clone()),
-				proposal_len
-			));
-			// Proposal would normally succeed
-			assert_ok!(Collective::vote(Origin::signed(1), hash.clone(), 0, true));
-			assert_ok!(Collective::vote(Origin::signed(2), hash.clone(), 0, true));
-			// But Root can disapprove and remove it anyway
-			assert_ok!(Collective::disapprove_proposal(Origin::root(), hash.clone()));
-			let record =
-				|event| EventRecord { phase: Phase::Initialization, event, topics: vec![] };
-			assert_eq!(
-				System::events(),
-				vec![
-					record(Event::Collective(RawEvent::Proposed(1, 0, hash.clone(), 2))),
-					record(Event::Collective(RawEvent::Voted(1, hash.clone(), true, 1, 0))),
-					record(Event::Collective(RawEvent::Voted(2, hash.clone(), true, 2, 0))),
-					record(Event::Collective(RawEvent::Disapproved(hash.clone()))),
-				]
-			);
-		})
-	}
-
+	// fn disapprove_proposal_works() {
+	// 	new_test_ext().execute_with(|| {
+	// 		let proposal = make_proposal(42);
+	// 		let proposal_len: u32 = proposal.using_encoded(|p| p.len() as u32);
+	// 		let hash: H256 = proposal.blake2_256().into();
+	// 		assert_ok!(Collective::propose(
+	// 			Origin::signed(1),
+	// 			2,
+	// 			Box::new(proposal.clone()),
+	// 			proposal_len
+	// 		));
+	// 		// Proposal would normally succeed
+	// 		assert_ok!(Collective::vote(Origin::signed(1), hash.clone(), 0, true));
+	// 		assert_ok!(Collective::vote(Origin::signed(2), hash.clone(), 0, true));
+	// 		// But Root can disapprove and remove it anyway
+	// 		assert_ok!(Collective::disapprove_proposal(Origin::root(), hash.clone()));
+	// 		let record =
+	// 			|event| EventRecord { phase: Phase::Initialization, event, topics: vec![] };
+	// 		assert_eq!(
+	// 			System::events(),
+	// 			vec![
+	// 				record(Event::Collective(RawEvent::Proposed(1, 0, hash.clone(), 2))),
+	// 				record(Event::Collective(RawEvent::Voted(1, hash.clone(), true, 1, 0))),
+	// 				record(Event::Collective(RawEvent::Voted(2, hash.clone(), true, 2, 0))),
+	// 				record(Event::Collective(RawEvent::Disapproved(hash.clone()))),
+	// 			]
+	// 		);
+	// 	})
+	// }
 	#[test]
 	#[should_panic(expected = "Members cannot contain duplicate accounts.")]
 	fn genesis_build_panics_with_duplicate_members() {
