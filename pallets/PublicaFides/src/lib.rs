@@ -65,8 +65,16 @@ pub mod pallet {
 	pub type NextClaimId<T: Config> = StorageValue<_, ClaimId, ValueQuery>;
 
 	#[pallet::storage]
+	#[pallet::getter(fn next_objective_claim_id)]
+	pub type NextObjectiveClaimId<T: Config> = StorageValue<_, ClaimId, ValueQuery>;
+
+	#[pallet::storage]
 	#[pallet::getter(fn get_objectivity)]
+<<<<<<< HEAD
 	pub type ObjectiveClaimStorage<T: Config> =
+=======
+	pub type ObjectivityStorage<T: Config> =
+>>>>>>> f7eb7d5 ("Adds objectivity storage")
 		StorageMap<_, Blake2_128Concat, ClaimId, Claim, ValueQuery>;
 
 	#[pallet::storage]
@@ -126,6 +134,7 @@ pub mod pallet {
 		NonExistentContent,
 	}
 
+<<<<<<< HEAD
 	pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
 		// Get mutable stored content by its id
 		ContentStorage::<T>::try_mutate_exists(content_id, |query_result| -> DispatchResult {
@@ -139,6 +148,21 @@ pub mod pallet {
 			Ok(())
 		});
 	}
+=======
+pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
+	// Get mutable stored content by its id
+	ContentStorage::<T>::try_mutate_exists(content_id, |query_result| -> DispatchResult {
+		let content = query_result.as_mut().ok_or(Error::<T>::NonExistentContent).unwrap();
+		// get claims for the given piece of content
+		let claims = FinalClaimStorage::<T>::get(content_id);
+		// update score of that piece of content with the score
+		content.score = score_claims(claims);
+		// Todo: decide whether we want to send an event i.e. alert the sender about the result
+		// Pallet::<T>::deposit_event(Event::ScoreStored(yourscorehere));
+		Ok(())
+	});
+}
+>>>>>>> f7eb7d5 ("Adds objectivity storage")
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -197,7 +221,7 @@ pub mod pallet {
 				|claim_id| -> Result<ClaimId, DispatchError> {
 					let current_id = *claim_id;
 					*claim_id =
-						claim_id.checked_add(One::one()).ok_or(Error::<T>::NoAvailableClaimId)?;
+					claim_id.checked_add(One::one()).ok_or(Error::<T>::NoAvailableClaimId)?;
 					Ok(current_id)
 				},
 			)?;
@@ -251,22 +275,30 @@ pub mod pallet {
 		pub fn store_objectivity_for_claim(
 			origin: OriginFor<T>,
 			claim_statement: Vec<u8>,
+<<<<<<< HEAD
 			is_accepted: bool,
+=======
+			claim_id: ClaimId,
+>>>>>>> f7eb7d5 ("Adds objectivity storage")
 		) -> DispatchResult {
 			// TODO: Discuss how this interacts with the propose extrinsic of pallet collective
 			ensure_signed(origin)?;
 
 			let new_claim_id =
-				NextClaimId::<T>::try_mutate(|claim_id| -> Result<ClaimId, DispatchError> {
+				NextObjectiveClaimId::<T>::try_mutate(|claim_id| -> Result<ClaimId, DispatchError> {
 					let current_id = *claim_id;
 					*claim_id =
 						claim_id.checked_add(One::one()).ok_or(Error::<T>::NoAvailableClaimId)?;
 					Ok(current_id)
 				})?;
 
-			let objective_claim = Claim { claim_text_cid: claim_statement, is_accepted };
+			let objective_claim = Claim { claim_text_cid: claim_statement, is_accepted: false };
 
+<<<<<<< HEAD
 			ObjectiveClaimStorage::<T>::insert(
+=======
+			ObjectivityStorage::<T>::insert(
+>>>>>>> f7eb7d5 ("Adds objectivity storage")
 				new_claim_id,
                 objective_claim,
 			);
