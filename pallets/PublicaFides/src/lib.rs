@@ -15,31 +15,30 @@ mod helper;
 
 #[frame_support::pallet]
 pub mod pallet {
+	pub use crate::helper::score_claims;
 	use frame_support::{
 		dispatch::{DispatchResult, EncodeLike},
 		pallet_prelude::*,
 	};
 	use frame_system::pallet_prelude::*;
-	use sp_std::vec::Vec;
 	use sp_runtime::traits::{AtLeast32BitUnsigned, CheckedAdd, One};
+	use sp_std::vec::Vec;
 	use substrate_fixed::types::U32F32;
-	pub use crate::helper::score_claims;
-	
+
 	#[pallet::config]
 	pub trait Config: frame_system::Config {
 		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
 		/// Id of content stored in the system
 		type ContentId: Parameter + Member + AtLeast32BitUnsigned + Default + Copy;
 	}
-	
+
 	/// Id of claims made in the system.
 	type ClaimId = u32;
 
 	#[pallet::pallet]
 	#[pallet::generate_store(pub(super) trait Store)]
 	pub struct Pallet<T>(_);
-	
-	
+
 	#[derive(Encode, Decode, Default, Clone, Eq, PartialEq, RuntimeDebug)]
 	/// Represents content in the system.
 	pub struct Content {
@@ -48,7 +47,7 @@ pub mod pallet {
 		/// Claims raised in the Content and their vote result. Max 10
 		claims: Vec<Claim>,
 		/// Number in range of 0-1 representing the calculated score for each piece of content
-		score: U32F32
+		score: U32F32,
 	}
 
 	#[pallet::storage]
@@ -86,7 +85,7 @@ pub mod pallet {
 	#[derive(Encode, Decode, Default, Clone, Eq, PartialEq, RuntimeDebug)]
 	// Claims that have been verified as objective and judged to be true or false
 	pub struct ResolvedClaims {
-		pub claims: Vec<Claim>
+		pub claims: Vec<Claim>,
 	}
 
 	#[pallet::storage]
@@ -109,28 +108,31 @@ pub mod pallet {
 		ContentStored(T::ContentId),
 		ClaimStored(ClaimId),
 		ScoreStored(u8),
+		ClaimText(Vec<u8>),
+		NewParticipant(T::AccountId),
+		RemovedParticipant(T::AccountId),
 	}
 
 	#[pallet::error]
 	pub enum Error<T> {
 		NoAvailableContentId,
 		NoAvailableClaimId,
-		NonExistentContent
+		NonExistentContent,
 	}
 
-pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
-	// Get mutable stored content by its id
-	ContentStorage::<T>::try_mutate_exists(content_id, |query_result| -> DispatchResult {
-		let content = query_result.as_mut().ok_or(Error::<T>::NonExistentContent).unwrap();
-		// get claims for the given piece of content
-		let claims = FinalClaimStorage::<T>::get(content_id);
-		// update score of that piece of content with the score
-		content.score = score_claims(claims);
-		// Todo: decide whether we want to send an event i.e. alert the sender about the result
-		// Pallet::<T>::deposit_event(Event::ScoreStored(yourscorehere));
-		Ok(())
-	});
-}
+	pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
+		// Get mutable stored content by its id
+		ContentStorage::<T>::try_mutate_exists(content_id, |query_result| -> DispatchResult {
+			let content = query_result.as_mut().ok_or(Error::<T>::NonExistentContent).unwrap();
+			// get claims for the given piece of content
+			let claims = FinalClaimStorage::<T>::get(content_id);
+			// update score of that piece of content with the score
+			content.score = score_claims(claims);
+			// Todo: decide whether we want to send an event i.e. alert the sender about the result
+			// Pallet::<T>::deposit_event(Event::ScoreStored(yourscorehere));
+			Ok(())
+		});
+	}
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -141,10 +143,7 @@ pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
 		///
 		/// * `origin` - Origin of the request.
 		/// * `url` - Url of the article. Displayed for the purpose of allowing voters to find and read the content.
-		pub fn store_content(
-			origin: OriginFor<T>,
-			url: Vec<u8>,
-		) -> DispatchResult {
+		pub fn store_content(origin: OriginFor<T>, url: Vec<u8>) -> DispatchResult {
 			ensure_signed(origin)?;
 			let class_id =
 				NextContentId::<T>::try_mutate(|id| -> Result<T::ContentId, DispatchError> {
@@ -187,32 +186,55 @@ pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
 						claim_id.checked_add(One::one()).ok_or(Error::<T>::NoAvailableClaimId)?;
 					Ok(current_id)
 				})?;
-			
-			let new_resolved_claim_id =
-				NextResolvedClaimID::<T>::try_mutate(|claim_id| -> Result<ClaimId, DispatchError> {
+
+			let new_resolved_claim_id = NextResolvedClaimID::<T>::try_mutate(
+				|claim_id| -> Result<ClaimId, DispatchError> {
 					let current_id = *claim_id;
 					*claim_id =
 						claim_id.checked_add(One::one()).ok_or(Error::<T>::NoAvailableClaimId)?;
 					Ok(current_id)
-				})?;
+				},
+			)?;
 
-			let this_claim = Claim { claim_text_cid: claim_statement, is_accepted };
+			let requested_claim = Claim { claim_text_cid: claim_statement, is_accepted };
 
-			ClaimsToContent::<T>::insert(
-				new_claim_id,
-				content_id.clone(),
-                this_claim.clone(),
-			);
+			ClaimsToContent::<T>::insert(new_claim_id, content_id.clone(), requested_claim.clone());
 
 			ContentStorage::<T>::try_mutate_exists(content_id.clone(), |val| -> DispatchResult {
 				// add claim id to content for future reference
 				let content = val.as_mut().ok_or(Error::<T>::NonExistentContent).unwrap();
-				content.claims.push(this_claim);
+				content.claims.push(requested_claim);
 				Self::deposit_event(Event::ClaimStored(new_claim_id));
 				Ok(())
 			});
 
 			Self::deposit_event(Event::ClaimStored(new_claim_id));
+			Ok(())
+		}
+
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
+		/// Signs a member up as a participant
+		///
+		/// # Arguments
+		///
+		/// * `origin` - Origin of the request
+		pub fn sign_up_member(origin: OriginFor<T>) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			// Insert member into collective instance/membership/storage. Whichever we decide
+			Self::deposit_event(Event::NewParticipant(who));
+			Ok(())
+		}
+
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
+		/// Remove a member up as a participant
+		///
+		/// # Arguments
+		///
+		/// * `origin` - Origin of the request
+		pub fn remove_member(origin: OriginFor<T>) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			// Remove member from collective instance/membership/storage. Whichever we decide
+			Self::deposit_event(Event::RemovedParticipant(who));
 			Ok(())
 		}
 	}
