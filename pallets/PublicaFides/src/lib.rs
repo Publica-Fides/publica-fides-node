@@ -93,14 +93,14 @@ pub mod pallet {
 	}
 
 	#[derive(Encode, Decode, Default, Clone, Eq, PartialEq, RuntimeDebug)]
-	// Claims that have been verified as objective and judged to be true or false
+	/// Claims that have been verified as objective and judged to be true or false
 	pub struct ResolvedClaims {
 		pub claims: Vec<Claim>
 	}
 
 	#[pallet::storage]
 	#[pallet::getter(fn get_claims)]
-	// Double Storage map that maps claims to the articles they originated from
+	/// Double Storage map that maps claims to the articles they originated from
 	pub type ClaimsToContent<T: Config> = StorageDoubleMap<
 		_,
 		Blake2_128Concat,
@@ -129,7 +129,7 @@ pub mod pallet {
 	}
 
 pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
-	// Get mutable stored content by its id
+	/// Get mutable stored content by its id
 	ContentStorage::<T>::try_mutate_exists(content_id, |query_result| -> DispatchResult {
 		let content = query_result.as_mut().ok_or(Error::<T>::NonExistentContent).unwrap();
 		// get claims for the given piece of content
@@ -234,7 +234,6 @@ pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
 		/// * `origin` - Origin of the request
 		/// * `Claim` - 
 		/// * `ClaimId` - Id of the claim
-		/// * `is_objective` - Whether a claim was determined objective or subjective
 		pub fn store_objectivity_for_claim(
 			origin: OriginFor<T>,
 			claim_statement: Vec<u8>,
