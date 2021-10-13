@@ -286,6 +286,7 @@ decl_error! {
 		WrongProposalWeight,
 		/// The given length bound for the proposal was too low.
 		WrongProposalLength,
+		BadOrigin
 	}
 }
 
@@ -416,7 +417,7 @@ decl_module! {
 		}
 
 
-				/// Add a new proposal to either be voted on or executed directly.
+		/// Add a new proposal to either be voted on or executed directly.
 		///
 		/// Requires the sender to be member.
 		///
@@ -966,6 +967,27 @@ decl_module! {
 				).into());
 			}
 		}
+
+		/// Disapprove a proposal, close, and remove it from the system, regardless of its current state.
+		///
+		/// Must be called by the Root origin.
+		///
+		/// Parameters:
+		/// * `proposal_hash`: The hash of the proposal that should be disapproved.
+		///
+		/// # <weight>
+		/// Complexity: O(P) where P is the number of max proposals
+		/// DB Weight:
+		/// * Reads: Proposals
+		/// * Writes: Voting, Proposals, ProposalOf
+		/// # </weight>
+		#[weight = T::WeightInfo::disapprove_proposal(T::MaxProposals::get())]
+		fn disapprove_proposal(origin, proposal_hash: T::Hash) -> DispatchResultWithPostInfo {
+			ensure_root(origin)?;
+			let proposal_count = Self::do_disapprove_proposal(proposal_hash);
+			Ok(Some(T::WeightInfo::disapprove_proposal(proposal_count)).into())
+		}
+
 	}
 }
 
@@ -1500,14 +1522,24 @@ mod tests {
 
 			let record =
 				|event| EventRecord { phase: Phase::Initialization, event, topics: vec![] };
+
 			assert_eq!(
 				System::events(),
 				vec![
-					record(Event::Collective(RawEvent::Proposed(1, 0, hash.clone(), 3))),
+					record(Event::Collective(RawEvent::ProposedFallback(
+						1,
+						0,
+						hash.clone(),
+						3,
+						fallback_hash
+					))),
 					record(Event::Collective(RawEvent::Voted(1, hash.clone(), true, 1, 0))),
 					record(Event::Collective(RawEvent::Voted(2, hash.clone(), true, 2, 0))),
-					record(Event::Collective(RawEvent::Closed(hash.clone(), 2, 1))),
-					record(Event::Collective(RawEvent::Disapproved(hash.clone())))
+					record(Event::Collective(RawEvent::Closed(fallback_hash.clone(), 2, 1))),
+					record(Event::Collective(RawEvent::FallbackExecuted(
+						fallback_hash.clone(),
+						Err(DispatchError::BadOrigin)
+					)))
 				]
 			);
 		});
