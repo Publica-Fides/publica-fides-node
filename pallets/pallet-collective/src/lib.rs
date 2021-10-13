@@ -202,11 +202,6 @@ decl_storage! {
 		/// Actual proposal for a given hash, if it's current.
 		pub ProposalOf get(fn proposal_of):
 			map hasher(identity) T::Hash => Option<<T as Config<I>>::Proposal>;
-
-		/// Fallback proposal for a given hash, if it's current.
-		pub FallbackProposalOf get(fn fallback_proposal_of):
-			map hasher(identity) T::Hash => Option<<T as Config<I>>::Proposal>;
-
 		/// Votes on a given proposal, if it is ongoing.
 		pub Voting get(fn voting):
 			map hasher(identity) T::Hash => Option<Votes<T::AccountId, T::BlockNumber>>;
@@ -258,6 +253,8 @@ decl_event! {
 		/// A motion was executed; result will be `Ok` if it returned without error.
 		/// \[proposal_hash, result\]
 		Executed(Hash, DispatchResult),
+		FallbackExecuted(Hash, DispatchResult),
+
 		/// A single member did some action; result will be `Ok` if it returned without error.
 		/// \[proposal_hash, result\]
 		MemberExecuted(Hash, DispatchResult),
@@ -698,7 +695,8 @@ decl_module! {
 			}
 		}
 
-		/// Close a vote that is either approved, disapproved or whose voting period has ended.
+
+				/// Close a vote that is either approved, disapproved or whose voting period has ended.
 		///
 		/// May be called by any signed account in order to finish voting and close the proposal.
 		///
@@ -746,6 +744,130 @@ decl_module! {
 			proposal_hash: T::Hash,
 			#[compact] index: ProposalIndex,
 			#[compact] proposal_weight_bound: Weight,
+			#[compact] length_bound: u32
+		) -> DispatchResultWithPostInfo {
+			let _ = ensure_signed(origin)?;
+
+			let voting = Self::voting(&proposal_hash).ok_or(Error::<T, I>::ProposalMissing)?;
+			ensure!(voting.index == index, Error::<T, I>::WrongIndex);
+
+			let mut no_votes = voting.nays.len() as MemberCount;
+			let mut yes_votes = voting.ayes.len() as MemberCount;
+			let seats = Self::members().len() as MemberCount;
+			let approved = yes_votes >= voting.threshold;
+			let disapproved = seats.saturating_sub(no_votes) < voting.threshold;
+			// Allow (dis-)approving the proposal as soon as there are enough votes.
+			if approved {
+				let (proposal, len) = Self::validate_and_get_proposal(
+					&proposal_hash,
+					length_bound,
+					proposal_weight_bound,
+				)?;
+				Self::deposit_event(RawEvent::Closed(proposal_hash, yes_votes, no_votes));
+				let (proposal_weight, proposal_count) =
+					Self::do_approve_proposal(seats, voting, proposal_hash, proposal);
+				return Ok((
+					Some(T::WeightInfo::close_early_approved(len as u32, seats, proposal_count)
+					.saturating_add(proposal_weight)),
+					Pays::Yes,
+				).into());
+
+			} else if disapproved {
+				Self::deposit_event(RawEvent::Closed(proposal_hash, yes_votes, no_votes));
+				let proposal_count = Self::do_disapprove_proposal(proposal_hash);
+				return Ok((
+					Some(T::WeightInfo::close_early_disapproved(seats, proposal_count)),
+					Pays::No,
+				).into());
+			}
+
+			// Only allow actual closing of the proposal after the voting period has ended.
+			ensure!(system::Pallet::<T>::block_number() >= voting.end, Error::<T, I>::TooEarly);
+
+			let prime_vote = Self::prime().map(|who| voting.ayes.iter().any(|a| a == &who));
+
+			// default voting strategy.
+			let default = T::DefaultVote::default_vote(prime_vote, yes_votes, no_votes, seats);
+
+			let abstentions = seats - (yes_votes + no_votes);
+			match default {
+				true => yes_votes += abstentions,
+				false => no_votes += abstentions,
+			}
+			let approved = yes_votes >= voting.threshold;
+
+			if approved {
+				let (proposal, len) = Self::validate_and_get_proposal(
+					&proposal_hash,
+					length_bound,
+					proposal_weight_bound,
+				)?;
+				Self::deposit_event(RawEvent::Closed(proposal_hash, yes_votes, no_votes));
+				let (proposal_weight, proposal_count) =
+					Self::do_approve_proposal(seats, voting, proposal_hash, proposal);
+				return Ok((
+					Some(T::WeightInfo::close_approved(len as u32, seats, proposal_count)
+					.saturating_add(proposal_weight)),
+					Pays::Yes,
+				).into());
+			} else {
+				Self::deposit_event(RawEvent::Closed(proposal_hash, yes_votes, no_votes));
+				let proposal_count = Self::do_disapprove_proposal(proposal_hash);
+				return Ok((
+					Some(T::WeightInfo::close_disapproved(seats, proposal_count)),
+					Pays::No,
+				).into());
+			}
+		}
+
+		/// Close a vote that is either approved, disapproved or whose voting period has ended.
+		///
+		/// May be called by any signed account in order to finish voting and close the proposal.
+		///
+		/// If called before the end of the voting period it will only close the vote if it is
+		/// has enough votes to be approved or disapproved.
+		///
+		/// If called after the end of the voting period abstentions are counted as rejections
+		/// unless there is a prime member set and the prime member cast an approval.
+		///
+		/// If the close operation completes successfully with disapproval, the transaction fee will
+		/// be waived. Otherwise execution of the approved operation will be charged to the caller.
+		///
+		/// + `proposal_weight_bound`: The maximum amount of weight consumed by executing the closed proposal.
+		/// + `length_bound`: The upper bound for the length of the proposal in storage. Checked via
+		///                   `storage::read` so it is `size_of::<u32>() == 4` larger than the pure length.
+		///
+		/// # <weight>
+		/// ## Weight
+		/// - `O(B + M + P1 + P2)` where:
+		///   - `B` is `proposal` size in bytes (length-fee-bounded)
+		///   - `M` is members-count (code- and governance-bounded)
+		///   - `P1` is the complexity of `proposal` preimage.
+		///   - `P2` is proposal-count (code-bounded)
+		/// - DB:
+		///  - 2 storage reads (`Members`: codec `O(M)`, `Prime`: codec `O(1)`)
+		///  - 3 mutations (`Voting`: codec `O(M)`, `ProposalOf`: codec `O(B)`, `Proposals`: codec `O(P2)`)
+		///  - any mutations done while executing `proposal` (`P1`)
+		/// - up to 3 events
+		/// # </weight>
+		#[weight = (
+			{
+				let b = *length_bound;
+				let m = T::MaxMembers::get();
+				let p1 = *proposal_weight_bound;
+				let p2 = T::MaxProposals::get();
+				T::WeightInfo::close_early_approved(b, m, p2)
+					.max(T::WeightInfo::close_early_disapproved(m, p2))
+					.max(T::WeightInfo::close_approved(b, m, p2))
+					.max(T::WeightInfo::close_disapproved(m, p2))
+					.saturating_add(p1)
+			},
+			DispatchClass::Operational
+		)]
+		fn close_dual(origin,
+			proposal_hash: T::Hash,
+			#[compact] index: ProposalIndex,
+			#[compact] proposal_weight_bound: Weight,
 			#[compact] length_bound: u32,
 			fallback_proposal_hash: T::Hash,
 		) -> DispatchResultWithPostInfo {
@@ -776,17 +898,18 @@ decl_module! {
 				).into());
 
 			} else if disapproved {
-				let (fallback_proposal, len) = Self::validate_and_get_proposal(
+				let (fallback_proposal, _) = Self::validate_and_get_fallback_proposal(
 					&fallback_proposal_hash,
 					length_bound,
 					proposal_weight_bound,
 				)?;
 				Self::deposit_event(RawEvent::Closed(fallback_proposal_hash, yes_votes, no_votes));
-				let proposal_count = Self::do_disapprove_proposal(
+				let proposal_count = Self::do_disapprove_dual_proposal(
 					fallback_proposal_hash,
 					seats,
 					voting,
-					fallback_proposal
+					fallback_proposal,
+					proposal_hash
 				);
 				return Ok((
 					Some(T::WeightInfo::close_early_disapproved(seats, proposal_count)),
@@ -824,17 +947,18 @@ decl_module! {
 					Pays::Yes,
 				).into());
 			} else {
-				let (proposal, len) = Self::validate_and_get_proposal(
+				let (fallback_proposal, len) = Self::validate_and_get_fallback_proposal(
 					&fallback_proposal_hash,
 					length_bound,
 					proposal_weight_bound,
 				)?;
 				Self::deposit_event(RawEvent::Closed(fallback_proposal_hash, yes_votes, no_votes));
-				let proposal_count = Self::do_disapprove_proposal(
+				let proposal_count = Self::do_disapprove_dual_proposal(
 					fallback_proposal_hash,
 					seats,
 					voting,
-					proposal
+					fallback_proposal,
+					proposal_hash
 				);
 				return Ok((
 					Some(T::WeightInfo::close_disapproved(seats, proposal_count)),
@@ -858,6 +982,26 @@ impl<T: Config<I>, I: Instance> Module<T, I> {
 	/// Checks the length in storage via `storage::read` which adds an extra `size_of::<u32>() == 4`
 	/// to the length.
 	fn validate_and_get_proposal(
+		hash: &T::Hash,
+		length_bound: u32,
+		weight_bound: Weight,
+	) -> Result<(<T as Config<I>>::Proposal, usize), DispatchError> {
+		let key = ProposalOf::<T, I>::hashed_key_for(hash);
+		// read the length of the proposal storage entry directly
+		let proposal_len =
+			storage::read(&key, &mut [0; 0], 0).ok_or(Error::<T, I>::ProposalMissing)?;
+		ensure!(proposal_len <= length_bound, Error::<T, I>::WrongProposalLength);
+		let proposal = ProposalOf::<T, I>::get(hash).ok_or(Error::<T, I>::ProposalMissing)?;
+		let proposal_weight = proposal.get_dispatch_info().weight;
+		ensure!(proposal_weight <= weight_bound, Error::<T, I>::WrongProposalWeight);
+		Ok((proposal, proposal_len as usize))
+	}
+
+	/// Ensure that the right proposal bounds were passed and get the fallback proposal from storage.
+	///
+	/// Checks the length in storage via `storage::read` which adds an extra `size_of::<u32>() == 4`
+	/// to the length.
+	fn validate_and_get_fallback_proposal(
 		hash: &T::Hash,
 		length_bound: u32,
 		weight_bound: Weight,
@@ -909,19 +1053,27 @@ impl<T: Config<I>, I: Instance> Module<T, I> {
 		(proposal_weight, proposal_count)
 	}
 
-	fn do_disapprove_proposal(
-		proposal_hash: T::Hash,
+	fn do_disapprove_dual_proposal(
+		fallback_proposal_hash: T::Hash,
 		seats: MemberCount,
 		voting: Votes<T::AccountId, T::BlockNumber>,
 		fallback_proposal: <T as Config<I>>::Proposal,
+		proposal_hash: T::Hash,
 	) -> u32 {
 		let origin = RawOrigin::Members(voting.threshold, seats).into();
 		let result = fallback_proposal.dispatch(origin);
 		// Self::deposit_event(RawEvent::Disapproved(proposal_hash));
-		Self::deposit_event(RawEvent::Executed(
-			proposal_hash,
+		Self::deposit_event(RawEvent::FallbackExecuted(
+			fallback_proposal_hash,
 			result.map(|_| ()).map_err(|e| e.error),
 		));
+		Self::remove_proposal(proposal_hash);
+		Self::remove_proposal(fallback_proposal_hash)
+	}
+
+	fn do_disapprove_proposal(proposal_hash: T::Hash) -> u32 {
+		// disapproved
+		Self::deposit_event(RawEvent::Disapproved(proposal_hash));
 		Self::remove_proposal(proposal_hash)
 	}
 
@@ -929,7 +1081,9 @@ impl<T: Config<I>, I: Instance> Module<T, I> {
 	fn remove_proposal(proposal_hash: T::Hash) -> u32 {
 		// remove proposal and vote
 		ProposalOf::<T, I>::remove(&proposal_hash);
-		Voting::<T, I>::remove(&proposal_hash);
+		if Voting::<T, I>::contains_key(&proposal_hash) {
+			Voting::<T, I>::remove(&proposal_hash);
+		}
 		let num_proposals = Proposals::<T, I>::mutate(|proposals| {
 			proposals.retain(|h| h != &proposal_hash);
 			proposals.len() + 1 // calculate weight based on original length
@@ -1284,6 +1438,64 @@ mod tests {
 				0,
 				proposal_weight,
 				proposal_len
+			));
+
+			let record =
+				|event| EventRecord { phase: Phase::Initialization, event, topics: vec![] };
+			assert_eq!(
+				System::events(),
+				vec![
+					record(Event::Collective(RawEvent::Proposed(1, 0, hash.clone(), 3))),
+					record(Event::Collective(RawEvent::Voted(1, hash.clone(), true, 1, 0))),
+					record(Event::Collective(RawEvent::Voted(2, hash.clone(), true, 2, 0))),
+					record(Event::Collective(RawEvent::Closed(hash.clone(), 2, 1))),
+					record(Event::Collective(RawEvent::Disapproved(hash.clone())))
+				]
+			);
+		});
+	}
+
+	#[test]
+	fn close_dual_proposal_works() {
+		new_test_ext().execute_with(|| {
+			let proposal = make_proposal(42);
+			let proposal_len: u32 = proposal.using_encoded(|p| p.len() as u32);
+			let proposal_weight = proposal.get_dispatch_info().weight;
+			let hash = BlakeTwo256::hash_of(&proposal);
+			let fallback_proposal = make_proposal(69);
+			let fallback_hash = BlakeTwo256::hash_of(&fallback_proposal);
+
+			assert_ok!(Collective::propose_dual(
+				Origin::signed(1),
+				3,
+				Box::new(proposal.clone()),
+				proposal_len,
+				Box::new(fallback_proposal.clone())
+			));
+			assert_ok!(Collective::vote(Origin::signed(1), hash.clone(), 0, true));
+			assert_ok!(Collective::vote(Origin::signed(2), hash.clone(), 0, true));
+
+			System::set_block_number(3);
+			assert_noop!(
+				Collective::close_dual(
+					Origin::signed(4),
+					hash.clone(),
+					0,
+					proposal_weight,
+					proposal_len,
+					fallback_hash
+				),
+				Error::<Test, Instance1>::TooEarly
+			);
+
+			System::set_block_number(4);
+			assert_ok!(Collective::close_dual(
+				Origin::signed(4),
+				hash.clone(),
+				0,
+				proposal_weight,
+				proposal_len,
+				fallback_hash
 			));
 
 			let record =
