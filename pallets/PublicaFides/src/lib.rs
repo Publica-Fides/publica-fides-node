@@ -17,23 +17,30 @@ mod helper;
 pub mod pallet {
 	pub use crate::helper::score_claims;
 	use frame_support::{
-		dispatch::{DispatchResult, EncodeLike},
+		dispatch::{DispatchResult, Dispatchable, EncodeLike},
 		pallet_prelude::*,
+		traits::Instance,
 	};
 	use frame_system::pallet_prelude::*;
+	use pallet_collective;
 	use sp_runtime::traits::{AtLeast32BitUnsigned, CheckedAdd, One};
 	use sp_std::vec::Vec;
 	use substrate_fixed::types::U32F32;
 
 	#[pallet::config]
-	pub trait Config: frame_system::Config {
+	pub trait Config: frame_system::Config + pallet_collective::Config {
 		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
 		/// Id of content stored in the system
 		type ContentId: Parameter + Member + AtLeast32BitUnsigned + Default + Copy;
+
+		type CouncilCollective: Instance;
+		type CouncilConfig: pallet_collective::Config<CouncilCollective>;
 	}
 
 	/// Id of claims made in the system.
 	type ClaimId = u32;
+
+	type CouncilCollective = pallet_collective::Instance1;
 
 	#[pallet::pallet]
 	#[pallet::generate_store(pub(super) trait Store)]
@@ -136,6 +143,55 @@ pub mod pallet {
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
+		/// Adds a proposal to Collective, with predetermined arguments.
+		///
+		/// # Arguments
+		///
+		/// * `origin` - Origin of the request.
+		/// * `url` - Thing to propose
+		pub fn do_proposal(origin: OriginFor<T>, url: Vec<u8>) -> DispatchResult {
+			ensure_signed(origin)?;
+
+			let some_arbitrary_url = [2].to_vec();
+
+			// some high % or all participants
+			let voting_threshold = 2;
+			let proposal_length = 10;
+
+			// Use store_content just for testing
+			// let my_proposal = Call::store_content(some_arbitrary_url);
+
+			// // Try with Collective's config
+			// pallet_collective::Call::<T: pallet_collective::Config, I: CouncilCollective>::propose(
+			// 	voting_threshold,
+			// 	Box::new(my_proposal.clone()),
+			// 	proposal_length,
+			// );
+
+			// pallet_collective::Call::set_members(vec![1, 2, 3], None, 6);
+
+			// try with "Collective"
+			// let my_prop_c = pallet_collective::Call::Collective(
+			// 	pallet_collective::Call::set_members(vec![1, 2, 3], None, 6);
+			// )
+
+			// try with our config
+			// pallet_collective::Call::<T>::propose(
+			// 	voting_threshold,
+			// 	Box::new(my_proposal.clone() as T::Proposal),
+			// 	proposal_length,
+			// );
+
+			// pallet_collective::Call::<T::CouncilConfig>::propose(
+			// 	voting_threshold,
+			// 	Box::new(my_proposal.clone()),
+			// 	proposal_length,
+			// );
+
+			Ok(())
+		}
+
 		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
 		/// Stores an article in the system to initiate the claims-voting process
 		///
