@@ -70,13 +70,8 @@ pub mod pallet {
 
 	#[pallet::storage]
 	#[pallet::getter(fn get_objectivity)]
-<<<<<<< HEAD
 		pub type ObjectiveClaimStorage<T: Config> =
 			StorageMap<_, Blake2_128Concat, ClaimId, Claim, ValueQuery>;
-=======
-	pub type ObjectivityStorage<T: Config> =
-		StorageMap<_, Blake2_128Concat, ClaimId, Claim, ValueQuery>;
->>>>>>> 014c95576a3f84cab92784a1d5507675458b3789
 
 	#[pallet::storage]
 	#[pallet::getter(fn next_resolved_claim_id)]
@@ -121,16 +116,11 @@ pub mod pallet {
 	pub enum Event<T: Config> {
 		ContentStored(T::ContentId),
 		ClaimStored(ClaimId),
-<<<<<<< HEAD
 		ScoreStored(u8),
 		ClaimText(Vec<u8>),
 		NewParticipant(T::AccountId),
 		RemovedParticipant(T::AccountId),
 		ObjectivityStored(ClaimId)
-=======
-		ScoreStored(),
-		ObjectivityStored(ClaimId),
->>>>>>> 014c95576a3f84cab92784a1d5507675458b3789
 	}
 
 	#[pallet::error]
@@ -140,7 +130,6 @@ pub mod pallet {
 		NonExistentContent,
 	}
 
-<<<<<<< HEAD
 	pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
 		// Get mutable stored content by its id
 		ContentStorage::<T>::try_mutate_exists(content_id, |query_result| -> DispatchResult {
@@ -154,21 +143,6 @@ pub mod pallet {
 			Ok(())
 		});
 	}
-=======
-pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
-	/// Get mutable stored content by its id
-	ContentStorage::<T>::try_mutate_exists(content_id, |query_result| -> DispatchResult {
-		let content = query_result.as_mut().ok_or(Error::<T>::NonExistentContent).unwrap();
-		// get claims for the given piece of content
-		let claims = FinalClaimStorage::<T>::get(content_id);
-		// update score of that piece of content with the score
-		content.score = score_claims(claims);
-		// Todo: decide whether we want to send an event i.e. alert the sender about the result
-		// Pallet::<T>::deposit_event(Event::ScoreStored(yourscorehere));
-		Ok(())
-	});
-}
->>>>>>> 014c95576a3f84cab92784a1d5507675458b3789
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
@@ -249,7 +223,6 @@ pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
 		}
 
 		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
-<<<<<<< HEAD
 		/// Signs a member up as a participant
 		///
 		/// # Arguments
@@ -264,14 +237,10 @@ pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
 
 		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
 		/// Remove a member up as a participant
-=======
-		/// Stores a claim as objective.
->>>>>>> 014c95576a3f84cab92784a1d5507675458b3789
 		///
 		/// # Arguments
 		///
 		/// * `origin` - Origin of the request
-<<<<<<< HEAD
 		pub fn remove_member(origin: OriginFor<T>) -> DispatchResult {
 			let who = ensure_signed(origin)?;
 			// Remove member from collective instance/membership/storage. Whichever we decide
@@ -287,14 +256,6 @@ pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
 			origin: OriginFor<T>,
 			claim_statement: Vec<u8>,
 			is_accepted: bool,
-=======
-		/// * `Claim` - 
-		/// * `ClaimId` - Id of the claim
-		pub fn store_objectivity_for_claim(
-			origin: OriginFor<T>,
-			claim_statement: Vec<u8>,
-			claim_id: ClaimId,
->>>>>>> 014c95576a3f84cab92784a1d5507675458b3789
 		) -> DispatchResult {
 			// TODO: Discuss how this interacts with the propose extrinsic of pallet collective
 			ensure_signed(origin)?;
@@ -309,11 +270,7 @@ pub fn truth_from_content<T: Config>(content_id: T::ContentId) {
 
 			let objective_claim = Claim { claim_text_cid: claim_statement, is_accepted: false };
 
-<<<<<<< HEAD
 			ObjectiveClaimStorage::<T>::insert(
-=======
-			ObjectivityStorage::<T>::insert(
->>>>>>> 014c95576a3f84cab92784a1d5507675458b3789
 				new_claim_id,
                 objective_claim,
 			);
