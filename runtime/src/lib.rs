@@ -347,7 +347,8 @@ impl pallet_collective::Config<BoardCollective> for Runtime {
 /// Configure the publicafides in pallets/template.
 impl publicafides::Config for Runtime {
 	type Event = Event;
-	type ContentId = u32;
+	type CouncilCollective = CouncilCollective;
+	type CouncilConfig = pallet_collective::Config<CouncilCollective>;
 }
 
 // Create the runtime by composing the FRAME pallets that were previously configured.

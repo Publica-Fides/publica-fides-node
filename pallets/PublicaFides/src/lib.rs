@@ -19,10 +19,12 @@ pub mod pallet {
 	use frame_support::{
 		dispatch::{DispatchResult, EncodeLike},
 		pallet_prelude::*,
+		traits::Instance,
 	};
 	use frame_system::pallet_prelude::*;
+	use pallet_collective;
 	use sp_runtime::traits::{AtLeast32BitUnsigned, CheckedAdd, One};
-	use sp_std::vec::Vec;
+	use sp_std::{prelude::Box, vec::Vec};
 	use substrate_fixed::types::U32F32;
 
 	#[pallet::config]
@@ -30,6 +32,11 @@ pub mod pallet {
 		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
 		/// Id of content stored in the system
 		type ContentId: Parameter + Member + AtLeast32BitUnsigned + Default + Copy;
+
+		type CouncilCollective: Instance;
+
+		type CouncilConfig: Config
+			+ pallet_collective::Config<Self::CouncilCollective, Proposal = Call<Self::CouncilConfig>>;
 	}
 
 	/// Id of claims made in the system.
@@ -70,8 +77,8 @@ pub mod pallet {
 
 	#[pallet::storage]
 	#[pallet::getter(fn get_objectivity)]
-		pub type ObjectiveClaimStorage<T: Config> =
-			StorageMap<_, Blake2_128Concat, ClaimId, Claim, ValueQuery>;
+	pub type ObjectiveClaimStorage<T: Config> =
+		StorageMap<_, Blake2_128Concat, ClaimId, Claim, ValueQuery>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn next_resolved_claim_id)]
@@ -120,7 +127,7 @@ pub mod pallet {
 		ClaimText(Vec<u8>),
 		NewParticipant(T::AccountId),
 		RemovedParticipant(T::AccountId),
-		ObjectivityStored(ClaimId)
+		ObjectivityStored(ClaimId),
 	}
 
 	#[pallet::error]
@@ -146,6 +153,22 @@ pub mod pallet {
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
+		pub fn propose_thing(origin: OriginFor<T>, my_string: Vec<u8>) -> DispatchResult {
+			let voting_threshold = 2;
+			let proposal_length = 10;
+			let my_proposal = Call::store_content(my_string);
+
+			pallet_collective::Call::<T::CouncilConfig, T::CouncilCollective>::propose(
+				voting_threshold,
+				Box::new(my_proposal.clone()),
+				proposal_length,
+			);
+
+			ensure_signed(origin)?;
+			Ok(())
+		}
+
 		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
 		/// Stores an article in the system to initiate the claims-voting process
 		///
@@ -201,7 +224,7 @@ pub mod pallet {
 				|claim_id| -> Result<ClaimId, DispatchError> {
 					let current_id = *claim_id;
 					*claim_id =
-					claim_id.checked_add(One::one()).ok_or(Error::<T>::NoAvailableClaimId)?;
+						claim_id.checked_add(One::one()).ok_or(Error::<T>::NoAvailableClaimId)?;
 					Ok(current_id)
 				},
 			)?;
@@ -250,7 +273,7 @@ pub mod pallet {
 		/// Stores a claim as objective.
 		/// * 'origin' - Origin of the request
 		/// * `claim_statement` - IPFS CID of a stored string that contains an objective claim.
-		/// * `claim_id` - previously generated 
+		/// * `claim_id` - previously generated
 		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
 		pub fn store_objectivity_for_claim(
 			origin: OriginFor<T>,
@@ -260,20 +283,18 @@ pub mod pallet {
 			// TODO: Discuss how this interacts with the propose extrinsic of pallet collective
 			ensure_signed(origin)?;
 
-			let new_claim_id =
-				NextObjectiveClaimId::<T>::try_mutate(|claim_id| -> Result<ClaimId, DispatchError> {
+			let new_claim_id = NextObjectiveClaimId::<T>::try_mutate(
+				|claim_id| -> Result<ClaimId, DispatchError> {
 					let current_id = *claim_id;
 					*claim_id =
 						claim_id.checked_add(One::one()).ok_or(Error::<T>::NoAvailableClaimId)?;
 					Ok(current_id)
-				})?;
+				},
+			)?;
 
 			let objective_claim = Claim { claim_text_cid: claim_statement, is_accepted: false };
 
-			ObjectiveClaimStorage::<T>::insert(
-				new_claim_id,
-                objective_claim,
-			);
+			ObjectiveClaimStorage::<T>::insert(new_claim_id, objective_claim);
 			Ok(())
 		}
 	}

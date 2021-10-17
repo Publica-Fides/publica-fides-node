@@ -68,6 +68,11 @@ default-features = false
 git = 'https://github.com/encointer/substrate-fixed'
 version = '0.5.6'
 
+[dependencies.pallet-collective]
+default-features = false
+version = '4.0.0-dev'
+path = '../pallet-collective'
+
 [features]
 default = ['std']
 runtime-benchmarks = ['frame-benchmarking']
@@ -75,6 +80,7 @@ std = [
     'codec/std',
     'frame-support/std',
     'frame-system/std',
-    'frame-benchmarking/std'
+    'frame-benchmarking/std',
+    'pallet-collective/std'
 ]
 try-runtime = ['frame-support/try-runtime']
